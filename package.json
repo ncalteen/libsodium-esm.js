@@ -1,6 +1,6 @@
 {
   "name": "@ncalteen/libsodium-esm-wrappers",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "The Sodium cryptographic library compiled to pure JavaScript (wrappers)",
   "main": "dist/modules/libsodium-wrappers.js",
   "files": [
