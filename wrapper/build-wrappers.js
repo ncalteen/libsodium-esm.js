@@ -4,15 +4,16 @@ var docBuilder = require("./build-doc");
 
 //Parse arguments
 const argv = process.argv;
-if (argv.length != 5) {
+if (argv.length < 5) {
   console.error(
-    "Usage: build-wrappers.js <libsodium module name> <API.md path> <wrappers path>"
+    "Usage: build-wrappers.js <libsodium module name> <API.md path> <wrappers path> [--esm]"
   );
   process.exit(1);
 }
 const libsodiumModuleName = argv[2],
   apiPath = argv[3],
-  wrappersPath = argv[4];
+  wrappersPath = argv[4],
+  esm = argv[5] === "--esm";
 
 //Loading preset macros
 var macros = {};
@@ -23,16 +24,27 @@ for (var i = 0; i < macrosFiles.length; i++) {
     continue;
   }
   var macroCode = fs.readFileSync(
-    path.join(__dirname, "macros", macrosFiles[i]), {
-    encoding: "utf8"
-  }
+    path.join(__dirname, "macros", macrosFiles[i]),
+    {
+      encoding: "utf8",
+    }
   );
   macros[macroName] = macroCode;
 }
 
-var templateCode = fs.readFileSync(path.join(__dirname, "wrap-template.js"), {
-  encoding: "utf8"
+var utilsCode = fs.readFileSync(path.join(__dirname, "wrap-utils.js"), {
+  encoding: "utf8",
 });
+if (esm) {
+  utilsCode = utilsCode.replace(/\nfunction/g, "\nexport function");
+}
+
+var templateCode = fs.readFileSync(
+  path.join(__dirname, esm ? "wrap-esm-template.js" : "wrap-template.js"),
+  {
+    encoding: "utf8",
+  }
+);
 
 var scriptBuf = templateCode;
 var functionsCode = "";
@@ -46,9 +58,10 @@ for (var i = 0; i < symbolsFiles.length; i++) {
     continue;
   }
   var currentSymbol = fs.readFileSync(
-    path.join(__dirname, "symbols", symbolsFiles[i]), {
-    encoding: "utf8"
-  }
+    path.join(__dirname, "symbols", symbolsFiles[i]),
+    {
+      encoding: "utf8",
+    }
   );
   try {
     currentSymbol = JSON.parse(currentSymbol);
@@ -62,8 +75,14 @@ for (var i = 0; i < symbolsFiles.length; i++) {
 for (var i = 0; i < symbols.length; i++) {
   buildSymbol(symbols[i]);
 }
-exportFunctions(symbols);
-exportConstants(loadConstants());
+if (!esm) {
+  exportFunctions(symbols);
+}
+if (esm) {
+  exportConstantsESM(loadConstants());
+} else {
+  exportConstants(loadConstants());
+}
 finalizeWrapper();
 
 function exportFunctions(symbols) {
@@ -76,10 +95,35 @@ function exportFunctions(symbols) {
   exportsCode += "var exported_functions = [" + keys.sort().join(", ") + "];\n";
   exportsCode += "var functions = [" + functions.sort().join(", ") + "];\n";
   exportsCode += "for (var i = 0; i < functions.length; i++) {\n";
-  exportsCode += '  if (typeof libsodium["_" + exported_functions[i]] === "function") {\n';
+  exportsCode +=
+    '  if (typeof libsodium["_" + exported_functions[i]] === "function") {\n';
   exportsCode += "    exports[exported_functions[i]] = functions[i];\n";
   exportsCode += "  }\n";
   exportsCode += "}\n";
+}
+
+function exportConstantsESM(constSymbols) {
+  var keys = [];
+  for (var i = 0; i < constSymbols.length; i++) {
+    if (constSymbols[i].type === "uint") {
+      keys.push(constSymbols[i].name);
+    }
+  }
+  for (var i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    exportsCode += `export const ${key} = libsodium._${key.toLowerCase()}?.();\n`;
+  }
+
+  keys = [];
+  for (i = 0; i < constSymbols.length; i++) {
+    if (constSymbols[i].type === "string") {
+      keys.push(constSymbols[i].name);
+    }
+  }
+  for (var i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    exportsCode += `export const ${key} = libsodium.UTF8ToString(libsodium._${key.toLowerCase()}?.());\n`;
+  }
 }
 
 function exportConstants(constSymbols) {
@@ -92,7 +136,8 @@ function exportConstants(constSymbols) {
   exportsCode += "var constants = [" + keys.sort().join(", ") + "];\n";
   exportsCode += "for (var i = 0; i < constants.length; i++) {\n";
   exportsCode += '  var raw = libsodium["_" + constants[i].toLowerCase()];\n';
-  exportsCode += '  if (typeof raw === "function") exports[constants[i]] = raw();\n';
+  exportsCode +=
+    '  if (typeof raw === "function") exports[constants[i]] = raw();\n';
   exportsCode += "}\n";
 
   keys = [];
@@ -103,8 +148,10 @@ function exportConstants(constSymbols) {
   }
   exportsCode += "var constants_str = [" + keys.sort().join(", ") + "];\n";
   exportsCode += "for (var i = 0; i < constants_str.length; i++) {\n";
-  exportsCode += '  var raw = libsodium["_" + constants_str[i].toLowerCase()];\n';
-  exportsCode += '  if (typeof raw === "function") exports[constants_str[i]] = libsodium.UTF8ToString(raw());\n';
+  exportsCode +=
+    '  var raw = libsodium["_" + constants_str[i].toLowerCase()];\n';
+  exportsCode +=
+    '  if (typeof raw === "function") exports[constants_str[i]] = libsodium.UTF8ToString(raw());\n';
   exportsCode += "}\n";
 }
 
@@ -114,6 +161,9 @@ function buildSymbol(symbolDescription) {
   if (symbolDescription.type == "function") {
     var targetName = "libsodium._" + symbolDescription.name;
     var funcCode = "function " + symbolDescription.name + "(";
+    if (esm) {
+      funcCode = "export " + funcCode;
+    }
     var funcBody = "";
     //Adding parameters array in function's interface, their conversions in the function's body
     var paramsArray = [];
@@ -130,13 +180,21 @@ function buildSymbol(symbolDescription) {
       }
       var substitutions = [{ from: "{var_name}", to: currentParameter.name }];
       if (currentParameter.length !== undefined) {
-        substitutions.push({ from: "{var_length}", to: currentParameter.length });
+        substitutions.push({
+          from: "{var_length}",
+          to: currentParameter.length,
+        });
       }
       if (currentParameter.min_length !== undefined) {
-        substitutions.push({ from: "{var_min_length}", to: currentParameter.min_length });
+        substitutions.push({
+          from: "{var_min_length}",
+          to: currentParameter.min_length,
+        });
       }
       currentParameterCode = applyMacro(
-        currentParameterCode, substitutions.map((s) => s.from), substitutions.map((s) => s.to)
+        currentParameterCode,
+        substitutions.map((s) => s.from),
+        substitutions.map((s) => s.to)
       );
       funcBody += currentParameterCode + "\n";
     }
@@ -153,7 +211,8 @@ function buildSymbol(symbolDescription) {
     symbolDescription.outputs = symbolDescription.outputs || [];
     for (i = 0; i < symbolDescription.outputs.length; i++) {
       var currentOutput = symbolDescription.outputs[i];
-      var currentOutputCode = currentOutputCode = macros["output_" + currentOutput.type];
+      var currentOutputCode = (currentOutputCode =
+        macros["output_" + currentOutput.type]);
       if (!currentOutputCode) {
         console.error("What is the output type " + currentOutput.type + "?");
         process.exit(1);
@@ -163,10 +222,15 @@ function buildSymbol(symbolDescription) {
         substitutions.push({ from: "{var_length}", to: currentOutput.length });
       }
       if (currentOutput.min_length !== undefined) {
-        substitutions.push({ from: "{var_min_length}", to: currentOutput.min_length });
+        substitutions.push({
+          from: "{var_min_length}",
+          to: currentOutput.min_length,
+        });
       }
       currentOutputCode = applyMacro(
-        currentOutputCode, substitutions.map((s) => s.from), substitutions.map((s) => s.to)
+        currentOutputCode,
+        substitutions.map((s) => s.from),
+        substitutions.map((s) => s.to)
       );
       funcBody += currentOutputCode + "\n";
     }
@@ -187,14 +251,20 @@ function buildSymbol(symbolDescription) {
           funcBody += "}\n";
           funcBody +=
             "_free_and_throw_error(address_pool, " +
-            '"' + assert.or_else_throw + '"' + ");\n";
+            '"' +
+            assert.or_else_throw +
+            '"' +
+            ");\n";
         });
       } else {
         symbolDescription.assert_retval.forEach(function (assert) {
           funcBody += "if (!((" + target + ") " + assert.condition + ")) {\n";
           funcBody +=
             "\t_free_and_throw_error(address_pool, " +
-            '"' + assert.or_else_throw + '"' + ");\n";
+            '"' +
+            assert.or_else_throw +
+            '"' +
+            ");\n";
           funcBody += "}\n";
           funcBody += "_free_all(address_pool);\n";
         });
@@ -223,14 +293,18 @@ function applyMacro(macroCode, symbols, substitutes) {
   if (typeof macroCode != "string")
     throw new TypeError("macroCode must be a string, not " + typeof macroCode);
   if (!(Array.isArray(symbols) && checkStrArray(symbols)))
-    throw new TypeError("symbols must be an array of strings (found: " + typeof (symbols) + ")");
+    throw new TypeError(
+      "symbols must be an array of strings (found: " + typeof symbols + ")"
+    );
   if (!(Array.isArray(substitutes) && checkStrArray(substitutes)))
     throw new TypeError(
       "substitutes must be an array of strings for [" +
-      macroCode +
-      "] [" +
-      substitutes +
-      "] (found: " + typeof (substitutes) + ")"
+        macroCode +
+        "] [" +
+        substitutes +
+        "] (found: " +
+        typeof substitutes +
+        ")"
     );
   if (symbols.length > substitutes.length)
     throw new TypeError("invalid array length for substitutes");
@@ -242,8 +316,23 @@ function applyMacro(macroCode, symbols, substitutes) {
 }
 
 function finalizeWrapper() {
+  var subs = esm
+    ? [utilsCode, functionsCode, exportsCode, libsodiumModuleName]
+    : [
+        injectTabs(utilsCode, 2),
+        injectTabs(functionsCode, 2),
+        injectTabs(exportsCode, 3),
+        libsodiumModuleName,
+      ];
   scriptBuf = applyMacro(
-    scriptBuf, ["/*{{wraps_here}}*/", "/*{{exports_here}}*/", "/*{{libsodium}}*/"], [injectTabs(functionsCode, 2), injectTabs(exportsCode, 3), libsodiumModuleName]
+    scriptBuf,
+    [
+      "/*{{utils_here}}*/",
+      "/*{{wraps_here}}*/",
+      "/*{{exports_here}}*/",
+      "/*{{libsodium}}*/",
+    ],
+    subs
   );
   fs.writeFileSync(wrappersPath, scriptBuf);
   fs.writeFileSync(apiPath, docBuilder.getResultDoc());
@@ -253,7 +342,7 @@ function injectTabs(code, count) {
   if (count == undefined) count = 1;
 
   var out = "";
-  code = code.replace(/\r?\n$/, "") // remove trailing line break to avoid split result past the code end
+  code = code.replace(/\r?\n$/, ""); // remove trailing line break to avoid split result past the code end
   var lines = code.split(/\r?\n/g);
   for (var i = 0; i < lines.length; ++i) {
     if (lines[i] !== "") {
@@ -266,7 +355,7 @@ function injectTabs(code, count) {
 
 function loadConstants() {
   var constList = fs.readFileSync(path.join(__dirname, "constants.json"), {
-    encoding: "utf8"
+    encoding: "utf8",
   });
   try {
     constList = JSON.parse(constList);
@@ -282,7 +371,7 @@ function loadConstants() {
   for (var i = 0; i < constList.length; i++) {
     var currentConstant = {
       name: constList[i].name,
-      type: constList[i].type
+      type: constList[i].type,
     };
     constSymbols.push(currentConstant);
   }
@@ -290,14 +379,12 @@ function loadConstants() {
 }
 
 function checkStrArray(a) {
-  for (var i = 0; i < a.length; i++)
-    if (typeof a[i] !== "string") return false;
+  for (var i = 0; i < a.length; i++) if (typeof a[i] !== "string") return false;
   return true;
 }
 
 function checkObjectArray(a) {
-  for (var i = 0; i < a.length; i++)
-    if (typeof a[i] !== "object") return false;
+  for (var i = 0; i < a.length; i++) if (typeof a[i] !== "object") return false;
   return true;
 }
 

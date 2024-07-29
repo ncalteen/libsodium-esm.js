@@ -9,8 +9,8 @@ LIBSODIUM_DIR=./libsodium
 LIBSODIUM_JS_DIR=$(LIBSODIUM_DIR)/libsodium-js
 LIBSODIUM_JS_SUMO_DIR=$(LIBSODIUM_DIR)/libsodium-js-sumo
 
-TERSIFY = bun run terser --mangle --compress drop_console=true,passes=3 --
-BUN := bun
+TERSIFY = npx terser --mangle --compress drop_console=true,passes=3 --
+NODE := $(shell if which nodejs >/dev/null 2>&1 ; then echo nodejs; else echo node ; fi)
 
 all: pack
 	@echo
@@ -22,6 +22,8 @@ all: pack
 	@echo =================
 	@ls -l $(MODULES_SUMO_DIR)/
 
+esm: $(MODULES_DIR)/libsodium.esm.js $(MODULES_DIR)/libsodium-esm-wrappers.js
+	@echo + Building standard ESM distribution
 
 standard: $(MODULES_DIR)/libsodium.js $(MODULES_DIR)/libsodium-wrappers.js
 	@echo + Building standard distribution
@@ -37,7 +39,7 @@ browsers-tests: $(LIBSODIUM_DIR)/test/default/browser/sodium_core.html
 targets: standard sumo
 
 pack: targets
-	@-bun install
+	@-npm install
 	@echo + Packing
 	for i in $(MODULES_DIR)/*.js $(MODULES_SUMO_DIR)/*.js $(BROWSERS_DIR)/*.js $(BROWSERS_SUMO_DIR)/*.js; do \
 	  echo "Packing [$$i]" ; \
@@ -47,12 +49,22 @@ pack: targets
 $(MODULES_DIR)/libsodium-wrappers.js: wrapper/build-wrappers.js wrapper/build-doc.js wrapper/wrap-template.js
 	@echo +++ Building standard/libsodium-wrappers.js
 	mkdir -p $(MODULES_DIR)
-	$(BUN) wrapper/build-wrappers.js libsodium API.md $(MODULES_DIR)/libsodium-wrappers.js
+	$(NODE) wrapper/build-wrappers.js libsodium API.md $(MODULES_DIR)/libsodium-wrappers.js
+
+$(MODULES_DIR)/libsodium-esm-wrappers.js: wrapper/build-wrappers.js wrapper/build-doc.js wrapper/wrap-esm-template.js
+	@echo +++ Building standard/libsodium-esm-wrappers.js
+	mkdir -p $(MODULES_DIR)
+	$(NODE) wrapper/build-wrappers.js libsodium API.md $(MODULES_DIR)/libsodium-esm-wrappers.js --esm
 
 $(MODULES_SUMO_DIR)/libsodium-wrappers.js: wrapper/build-wrappers.js wrapper/build-doc.js wrapper/wrap-template.js
 	@echo +++ Building sumo/libsodium-wrappers.js
 	mkdir -p $(MODULES_SUMO_DIR)
-	$(BUN) wrapper/build-wrappers.js libsodium-sumo API_sumo.md $(MODULES_SUMO_DIR)/libsodium-wrappers.js
+	$(NODE) wrapper/build-wrappers.js libsodium-sumo API_sumo.md $(MODULES_SUMO_DIR)/libsodium-wrappers.js
+
+$(MODULES_DIR)/libsodium.esm.js: wrapper/libsodium-pre.js wrapper/libsodium-post.js $(MODULES_DIR)/libsodium-esm-wrappers.js $(LIBSODIUM_JS_DIR)/lib/libsodium.js
+	@echo +++ Building standard/libsodium ESM
+	mkdir -p $(MODULES_DIR)
+	cp $(LIBSODIUM_JS_DIR)/lib/libsodium.esm.js $(MODULES_DIR)/libsodium.esm.js
 
 $(MODULES_DIR)/libsodium.js: wrapper/libsodium-pre.js wrapper/libsodium-post.js $(MODULES_DIR)/libsodium-wrappers.js $(LIBSODIUM_JS_DIR)/lib/libsodium.js
 	@echo +++ Building standard/libsodium
@@ -76,6 +88,9 @@ $(LIBSODIUM_DIR)/test/default/browser/sodium_core.html: $(LIBSODIUM_DIR)/configu
 	rm -fr $(BROWSERS_TEST_DIR) && cp -R $(LIBSODIUM_DIR)/test/default/browser $(BROWSERS_TEST_DIR)
 
 $(LIBSODIUM_JS_DIR)/lib/libsodium.js: $(LIBSODIUM_DIR)/configure
+	cd $(LIBSODIUM_DIR) && env CPPFLAGS="-DFAVOR_PERFORMANCE" ./dist-build/emscripten.sh --standard
+
+$(LIBSODIUM_JS_DIR)/lib/libsodium.esm.js: $(LIBSODIUM_DIR)/configure
 	cd $(LIBSODIUM_DIR) && env CPPFLAGS="-DFAVOR_PERFORMANCE" ./dist-build/emscripten.sh --standard
 
 $(LIBSODIUM_JS_SUMO_DIR)/lib/libsodium.js: $(LIBSODIUM_DIR)/configure
