@@ -5,7 +5,7 @@ on:
     types:
       - closed
     branches:
-      - main
+      - master
   workflow_dispatch:
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
         with:
           manifest-path: package.json
           workspace: ${{ github.workspace }}
-          ref: main
+          ref: master
 
       - name: Create Release
         id: release
